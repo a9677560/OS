@@ -3,9 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <ctype.h>
 
 #define LSH_RL_BUFSIZE 1024
-#define LSH_TOK_BUFSIZE 64
+#define MAX_ARG_COUNT 15
+#define MAX_CMD_COUNT 5
 #define LSH_TOK_DELIM " \t\r\n\a"
 
 //Function declaration for builtin shell commands. 
@@ -13,6 +16,7 @@ int lsh_cd(char **args);
 int lsh_help(char **args);
 int lsh_exit(char **args);
 
+char *str_strip(char *str);
 
 //List of builtin commands
 char *builtin_str[] = {
@@ -56,7 +60,7 @@ int lsh_exit(char **args){
 		return 0;
 }
 		
-int lsh_launch(char **args){
+int lsh_launch(char **args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]){
 	pid_t pid, wpid;
 	int status;
 
@@ -64,126 +68,176 @@ int lsh_launch(char **args){
 	if(pid == 0){
 			//Child process
 			//Do system call of exec
+			
+			//Check if pipeline exists.
+			if(fd_in != STDIN_FILENO)
+					dup2(fd_in, STDIN_FILENO);
+			if(fd_out != STDOUT_FILENO)
+					dup2(fd_out, STDOUT_FILENO);
+			
+			for(int P = 0; P < pipes_count; P++){
+					close(pipes_fd[P][0]);	
+					close(pipes_fd[P][1]);
+			}
+
 			if(execvp(args[0], args) == -1){
 					perror("lsh");
+					exit(EXIT_FAILURE);
 			}
+
 			exit(EXIT_FAILURE);
 	} else if (pid < 0){
 			//Error forking
-			perror("lsh");
-	} else {	//Success
+			perror("Error: Unable to fork.\n");
+			exit(EXIT_FAILURE);
+	} else {	
+			/* This will cause pipeline to stuck in some case.
+			 * EX: cat text.txt | tail -2
+			 *
 			//Parent process
 			do {
 				//Wait for process's state to change
 				wpid = waitpid(pid, &status, WUNTRACED);
 			} while(!WIFEXITED(status) && !WIFSIGNALED(status));
-
-			return 1;
+			*/
 	}
+
+	return 1;
 }
 
-int lsh_execute(char **args){
-		int i;
-		int args_num = sizeof(args) / sizeof(char*);
-
-		if(args[0] == NULL){
-				//An empty command
+int lsh_execute(char ***args){
+		int i, C, P;
+		int status = 0;
+		int cmd_count = 0, pipeline_count = 0;
+		
+		if(args == NULL)	//An empty command
 				return 1;
-		}
 
-		//TODO: check if pipeline
-		for(i = 0; i < args_num; i++){
-				if(strcmp(args[0], "|") == 0){
-						//return lsh_pipeline();
-				}
+		//Temparorily not deal with pipeline of builtin command.
+		for(i = 0; i < lsh_num_builtins(); i++){
+			if(strcmp(args[0][0], builtin_str[i]) == 0)
+					return (*builtin_func[i])(args[0]);
 		}
 		
-		for(i = 0; i < lsh_num_builtins(); i++){
-			if(strcmp(args[0], builtin_str[i]) == 0)
-					return (*builtin_func[i])(args);
+		//if use sizeof/sizeof, will get count = MAX_CMD_COUNT	
+		while(args[cmd_count])
+				++cmd_count;
+		pipeline_count = cmd_count - 1;
+
+		int pipes_fd[MAX_CMD_COUNT][2];
+
+		for(P = 0; P < pipeline_count; P++){
+				if(pipe(pipes_fd[P]) == -1){
+						fprintf(stderr, "Error: Unable to create pipe (%d)\n", P);
+								exit(EXIT_FAILURE);
+				}
 		}
 
-		return lsh_launch(args);
+		for(C = 0; C < cmd_count; C++){
+				int fd_in = (C == 0) ? (STDIN_FILENO) : (pipes_fd[C - 1][0]);
+				int fd_out = (C == cmd_count - 1) ? (STDOUT_FILENO) : (pipes_fd[C][1]);
+
+				status = lsh_launch(args[C], fd_in, fd_out, pipeline_count, pipes_fd);
+		}
+
+		for(P = 0; P < pipeline_count; P++){
+				close(pipes_fd[P][0]);
+				close(pipes_fd[P][1]);
+		}
+
+		for(C = 0; C < cmd_count; C++){
+				int temp;
+				wait(&temp);
+		}
+		return status;
 }
 
-char **lsh_split_line(char *line){
-	int bufsize = LSH_TOK_BUFSIZE, position = 0;
-	char **tokens = malloc(bufsize * sizeof(char*));
-	char *token;
+/* TODO: Convert a string to args array array */
+char ***lsh_split_line(char *line){
+	int i, j;
 
-	if(!tokens){
-		fprintf(stderr, "lsh : allocation error\n");
-		exit(EXIT_FAILURE);
+
+	if(line == NULL)
+			return NULL;
+	static char *cmds[MAX_CMD_COUNT + 1];
+	memset(cmds, '\0', sizeof(cmds));
+
+	//Split cmds
+	cmds[0] = str_strip(strtok(line, "|"));
+	for(i = 1; i <= MAX_CMD_COUNT; i++){
+			cmds[i] = str_strip(strtok(NULL, "|"));
+			if(cmds[i] == NULL)	//No more cmds
+					break;
 	}
 
-	token = strtok(line, LSH_TOK_DELIM);
-	while(token != NULL) {
-			tokens[position] = token;
-			position++;
+	static char *args_array[MAX_CMD_COUNT + 1][MAX_ARG_COUNT + 1];
+	static char **args[MAX_CMD_COUNT + 1];
 
-			if(position >= bufsize){
-					bufsize += LSH_TOK_BUFSIZE;
-					tokens = realloc(tokens, bufsize * sizeof(char*));
-					if(!tokens){
-							fprintf(stderr, "lsh : allocation error\n");
-							exit(EXIT_FAILURE);
-					}
-			}
+	memset(args_array, '\0', sizeof(args_array));
+	memset(args, '\0', sizeof(args));
 
-			token = strtok(NULL, LSH_TOK_DELIM);
+	for(i = 0; cmds[i]; i++){
+		args[i] = args_array[i];
+
+		args[i][0] = strtok(cmds[i], LSH_TOK_DELIM);
+		for(j = 1; j <= MAX_ARG_COUNT; j++){
+				args[i][j] = strtok(NULL, LSH_TOK_DELIM);
+				
+				if(args[i][j] == NULL)
+						break;
+		}
 	}
-	tokens[position] = NULL;
-	return tokens;
+
+	return args;
 }
 
 char *lsh_read_line(void){
-	int bufsize = LSH_RL_BUFSIZE;
-	int position = 0;
-	char *buffer = malloc(sizeof(char) * bufsize);
-	int temp;
+	static char cmd_seq_buffer[LSH_RL_BUFSIZE];
 
-	if(!buffer){
-		fprintf(stderr, "lsh : allocation error\n");
-		exit(EXIT_FAILURE);
-	}
+	fputs(">>> $ ", stdout);
+	fflush(stdout);
 
-	while (1){
-		//Read a character
-		temp = getchar();
+	memset(cmd_seq_buffer, '\0', sizeof(cmd_seq_buffer));
+	fgets(cmd_seq_buffer, sizeof(cmd_seq_buffer), stdin);
 
-		//Replace last character with a null character
-		if( temp == EOF || temp == '\n' ){
-			buffer[position] = '\0';
-			return buffer;
-		} else 
-			buffer[position] = temp;
-		position++;
-		
-		//If exceeds size of buffer, reallocate
-		if (position >= bufsize) {
-			bufsize += LSH_RL_BUFSIZE;
-			buffer = realloc(buffer, bufsize);
-			if(!buffer){
-					fprintf(stderr, "lsh : allocation error\n");
-					exit(EXIT_FAILURE);
-			}
-		}
-		
-	}
+	if (feof(stdin))
+			return NULL;
+
+	char *line = str_strip(cmd_seq_buffer);
+	if(strlen(line) == 0)
+			return NULL;
+
+	return line;
+}
+
+char *str_strip(char *str){
+		if(!str)
+				return str;	//NULL
+
+		while(isspace(*str))
+				++str;
+
+		char *last = str;
+		while(*last != '\0') 
+				++last;
+		last--;		//move to the character before '\0'
+
+		while(isspace(*last)) 
+				*(last--) = '\0';	//replace space with \0
+
+		return str;
 }
 
 void lsh_loop(void){
 	char *line;	//string
-	char **args;	//array of string
+	char ***args;	//array of array of string
 	int status = 0;
 
 	do {
-		printf(">>> $");
+		//printf(">>> $");
 		line = lsh_read_line();	//Read command line
 		args = lsh_split_line(line);
 		status = lsh_execute(args);		//Status flag determine when to terminate.
-		free(line);
-		free(args);
 	} while(status);
 }
 
