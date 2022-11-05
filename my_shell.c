@@ -13,6 +13,13 @@
 #define LSH_TOK_DELIM " \t\r\n\a"
 #define CMD_ARR_COUNT 16
 
+
+/****************************************
+ *Unfinished function:                  * 
+ * 1.Pipeline of builtin function       *
+ * 2.Get parent and child process id    *
+ ****************************************/
+
 //Function declaration for builtin shell commands. 
 int lsh_cd(char ***args);
 int lsh_help(char ***args);
@@ -55,6 +62,8 @@ int (*builtin_function[]) (char ***) = {
 void queue_add(char* str){
 		int total_count = rear - front + 1;
 		char temp[6];
+		if(str == NULL)
+				return;
 		if(strcmp(strncpy(temp, str, 6), "replay") == 0)
 				return;
 		if(total_count <= 0 && rear != -1)
@@ -173,6 +182,8 @@ int lsh_launch(char **args, int fd_in, int fd_out, int pipes_count, int pipes_fd
 	pid_t pid, wpid;
 	int status;
 	int args_count = 0;
+	int input_flag = 0, output_flag = 0;
+	int redirection_index = 0;
 	
 	while(args[args_count] != NULL)
 		args_count++;
@@ -185,44 +196,50 @@ int lsh_launch(char **args, int fd_in, int fd_out, int pipes_count, int pipes_fd
 			//Do system call of exec
 			
 			//Check if there is & character
-			if(strcmp(args[args_count - 1], "&") == 0)
+			if(strcmp(args[args_count - 1], "&") == 0){
 					args[args_count - 1] = NULL;
+					--args_count;
+			}
 			
 			//Check if there is an redirection	
 			for(int i = 0; i < args_count; i++){
 					if(strcmp(args[i], ">") == 0){
-						//S_IRUSR | S_IWUSR)
-							fd_in = fd_out;
-							fd_out = open(args[i+1], O_RDWR | O_CREAT | O_TRUNC , 0644); 
-							//fd_out = creat(args[i+1], 0644);
-							if(fd_out < 0){
-									perror("Cant open file.");
-									exit(EXIT_FAILURE);
-							}
-							//Clear '>'
-							args[i] = NULL;
+							output_flag = 1;
+							redirection_index = i;
+							break;
 					}
 
 					if(strcmp(args[i], "<") == 0){
-							fd_in = open(args[i+1], O_RDONLY);
-							if(fd_in < 0){
-								perror("Cant open file.");
-								exit(EXIT_FAILURE);
-							}
-							args[i] = NULL;
+							input_flag = 1;
+							redirection_index = i;
+							break;
 					}
 			}
 
 			if(fd_in != STDIN_FILENO)
+				dup2(fd_in, STDIN_FILENO);
+			else{
+				if(input_flag == 1){
+					fd_in = open(args[redirection_index+1], O_RDONLY);
 					dup2(fd_in, STDIN_FILENO);
+					//Clear '<'
+					args[redirection_index] = NULL;
+				}
+			}
 			if(fd_out != STDOUT_FILENO)
+				dup2(fd_out, STDOUT_FILENO);
+			else{
+				if(output_flag == 1){
+					fd_out = open(args[redirection_index+1], O_RDWR | O_CREAT | O_TRUNC , 0777); 
 					dup2(fd_out, STDOUT_FILENO);
-			
+					//Clear '>'
+					args[redirection_index] = NULL;
+				}
+			}
 			for(int P = 0; P < pipes_count; P++){
 					close(pipes_fd[P][0]);	
 					close(pipes_fd[P][1]);
 			}
-
 			if(execvp(args[0], args) == -1){
 					perror("lsh");
 					exit(EXIT_FAILURE);
@@ -234,11 +251,14 @@ int lsh_launch(char **args, int fd_in, int fd_out, int pipes_count, int pipes_fd
 			perror("Error: Unable to fork.\n");
 			exit(EXIT_FAILURE);
 	} else {
-			if(strcmp(args[args_count - 1], "&") == 0)
+			if(strcmp(args[args_count - 1], "&") == 0){
 				printf("[Pid]: %d\n", pid);
+				fflush(stdout);
+			} else
+				wait(NULL);
 			/* This will cause pipeline to stuck in some case.
 			 * EX: cat text.txt | tail -2
-			 *
+			 
 			//Parent process
 			do {
 				//Wait for process's state to change
@@ -274,14 +294,16 @@ int lsh_execute(char ***args){
 		for(P = 0; P < pipeline_count; P++){
 				if(pipe(pipes_fd[P]) == -1){
 						fprintf(stderr, "Error: Unable to create pipe (%d)\n", P);
-								exit(EXIT_FAILURE);
+						exit(EXIT_FAILURE);
 				}
 		}
 
 		for(C = 0; C < cmd_count; C++){
 				int fd_in = (C == 0) ? (STDIN_FILENO) : (pipes_fd[C - 1][0]);
 				int fd_out = (C == cmd_count - 1) ? (STDOUT_FILENO) : (pipes_fd[C][1]);
-
+				
+				if(C > 0)
+					close(pipes_fd[C - 1][1]);
 				status = lsh_launch(args[C], fd_in, fd_out, pipeline_count, pipes_fd);
 		}
 
@@ -290,10 +312,10 @@ int lsh_execute(char ***args){
 				close(pipes_fd[P][1]);
 		}
 
-		for(C = 0; C < cmd_count; C++){
+		/*for(C = 0; C < cmd_count; C++){
 				int temp;
 				wait(&temp);
-		}
+		}*/
 		return status;
 }
 
