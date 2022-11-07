@@ -21,13 +21,13 @@
  ****************************************/
 
 //Function declaration for builtin shell commands. 
-int lsh_cd(char ***args);
-int lsh_help(char ***args);
-int lsh_exit(char ***args);
-int lsh_echo(char ***args);
-int lsh_record(char ***args);
-int lsh_replay(char ***argv);
-int lsh_mypid(char ***args);
+int lsh_cd(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]);
+int lsh_help(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]);
+int lsh_exit(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]);
+int lsh_echo(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]);
+int lsh_record(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]);
+int lsh_replay(char ***argv, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]);
+int lsh_mypid(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]);
 
 char *lsh_read_line(void);
 char *str_strip(char *str);
@@ -48,7 +48,7 @@ char *builtin_str[] = {
 
 //Array of builtin functions
 
-int (*builtin_function[]) (char ***) = {
+int (*builtin_function[]) (char ***, int, int, int, int[][2]) = {
 		&lsh_cd,
 		&lsh_help,
 		&lsh_exit, 
@@ -75,7 +75,7 @@ void queue_add(char* str){
 		strcpy(commands[rear], str);
 }
 
-int lsh_mypid(char ***args){
+int lsh_mypid(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]){
 		if(args[0][1] == NULL){
 			fprintf(stderr, "lsh : expected argument to \"mypid\"\n");			
 		} else { 
@@ -85,7 +85,7 @@ int lsh_mypid(char ***args){
 		return 1;
 }
 
-int lsh_record(char ***args){
+int lsh_record(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]){
     int i, j;
 	printf("history cmd:\n");
 	for(i = front, j = 0; j < CMD_ARR_COUNT; i = (i + 1) % CMD_ARR_COUNT, j++){
@@ -95,7 +95,7 @@ int lsh_record(char ***args){
 	return 1;
 }
 
-int lsh_replay(char ***argv){
+int lsh_replay(char ***argv, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]){
 		int status = 0;
 		int pipe_count = 0;
 		if(atoi(argv[0][1]) <= 0 || atoi(argv[0][1]) >= 17){
@@ -110,10 +110,8 @@ int lsh_replay(char ***argv){
 			line = (char*)malloc(sizeof(commands[index]));
 			strcpy(line, commands[index]);
 
-			while(argv[pipe_count] != NULL)
-					pipe_count++;
 			//Check if pipeline exists
-			if(pipe_count > 1){
+			if(pipes_count > 0){
 					for(int i = 1; i < pipe_count; i++){
 						int argv_count = 0;
 						while(argv[i][argv_count] != NULL)
@@ -137,7 +135,7 @@ int lsh_num_builtins() {
 	return sizeof(builtin_str) / sizeof(char*);
 }
 
-int lsh_echo(char ***args){
+int lsh_echo(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]){
 		//No ability to deal with pipeline
 		int args_count = 0;
 		while(args[0][args_count] != NULL)
@@ -151,10 +149,33 @@ int lsh_echo(char ***args){
 					printf("%s ", args[0][i]);
 			printf("\n");
 		}
+		
+		//output file redirection
+		int redirection_index = 0, output_flag = 0;
+		if(pipes_count > 0){
+			args_count = 0;
+			while(args[pipes_count][args_count] != NULL)
+					args_count++;
+			for(int i = 1; i < args_count; i++){
+				if(strcmp(args[pipes_count][i], ">") == 0){
+					redirection_index = i;
+					output_flag = 1;
+					break;
+				}
+			}
+		}
+		if(fd_out != STDOUT_FILENO)
+			dup2(fd_out, STDOUT_FILENO);
+		else{
+			if(output_flag){
+				fd_out = open(args[pipes_count][redirection_index+1], O_RDWR | O_CREAT | O_TRUNC , 0777);
+				dup2(fd_out, STDOUT_FILENO);
+			}
+		}
 		return 1;
 }
 
-int lsh_cd(char ***args){	
+int lsh_cd(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]){	
 	if(args[0][1] == NULL){
 		fprintf(stderr, "lsh : expected argument to \"cd\"\n");			
 	} else {
@@ -165,7 +186,7 @@ int lsh_cd(char ***args){
 	return 1;
 }
 
-int lsh_help(char ***args){
+int lsh_help(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]){
 		int i;
 		printf("The following are built in:\n");
 
@@ -174,7 +195,7 @@ int lsh_help(char ***args){
 		return 1;
 }
 
-int lsh_exit(char ***args){
+int lsh_exit(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]){
 		return 0;
 }
 		
@@ -236,6 +257,8 @@ int lsh_launch(char **args, int fd_in, int fd_out, int pipes_count, int pipes_fd
 					args[redirection_index] = NULL;
 				}
 			}
+
+			//Close pipelines of child
 			for(int P = 0; P < pipes_count; P++){
 					close(pipes_fd[P][0]);	
 					close(pipes_fd[P][1]);
@@ -254,17 +277,8 @@ int lsh_launch(char **args, int fd_in, int fd_out, int pipes_count, int pipes_fd
 			if(strcmp(args[args_count - 1], "&") == 0){
 				printf("[Pid]: %d\n", pid);
 				fflush(stdout);
-			} else
-				wait(NULL);
-			/* This will cause pipeline to stuck in some case.
-			 * EX: cat text.txt | tail -2
-			 
-			//Parent process
-			do {
-				//Wait for process's state to change
-				wpid = waitpid(pid, &status, WUNTRACED);
-			} while(!WIFEXITED(status) && !WIFSIGNALED(status));
-			*/
+			} else	
+				wait(NULL);		//Wait parent process to finish.
 	}
 
 	return 1;
@@ -272,25 +286,28 @@ int lsh_launch(char **args, int fd_in, int fd_out, int pipes_count, int pipes_fd
 
 int lsh_execute(char ***args){
 		int i, C, P;
-		int status = 0;
-		int cmd_count = 0, pipeline_count = 0;
-		
-		if(args == NULL)	//An empty command
-				return 1;
-
-		//Temparorily not deal with pipeline of builtin command except replay.
-		for(i = 0; i < lsh_num_builtins(); i++){
-				if(strcmp(args[0][0], builtin_str[i]) == 0)
-		    		return (*builtin_function[i])(args);
-		}
-		
-		//if use sizeof/sizeof, will get count = MAX_CMD_COUNT	
-		while(args[cmd_count])
-				++cmd_count;
-		pipeline_count = cmd_count - 1;
-
+		int status = 0, builtin = 0, builtin_index = 0;
+		int cmd_count = 0, pipeline_count = 0;	
 		int pipes_fd[MAX_CMD_COUNT][2];
 
+		if(args == NULL)	//An empty command
+			return 1;
+
+		//if use sizeof/sizeof, will get count = MAX_CMD_COUNT	
+		while(args[cmd_count])
+			++cmd_count;
+		pipeline_count = cmd_count - 1;
+
+		//Suppose builtin function only happens in first command
+		for(i = 0; i < lsh_num_builtins(); i++){
+			if(strcmp(args[0][0], builtin_str[i]) == 0){
+		    	//status = (*builtin_function[i])(args);
+				builtin = 1;
+				builtin_index = i;
+				break;
+			}
+		}
+		
 		for(P = 0; P < pipeline_count; P++){
 				if(pipe(pipes_fd[P]) == -1){
 						fprintf(stderr, "Error: Unable to create pipe (%d)\n", P);
@@ -299,11 +316,18 @@ int lsh_execute(char ***args){
 		}
 
 		for(C = 0; C < cmd_count; C++){
-				int fd_in = (C == 0) ? (STDIN_FILENO) : (pipes_fd[C - 1][0]);
-				int fd_out = (C == cmd_count - 1) ? (STDOUT_FILENO) : (pipes_fd[C][1]);
+			int fd_in = (C == 0) ? (STDIN_FILENO) : (pipes_fd[C - 1][0]);
+			int fd_out = (C == cmd_count - 1) ? (STDOUT_FILENO) : (pipes_fd[C][1]);
 				
-				if(C > 0)
-					close(pipes_fd[C - 1][1]);
+			if(C > 0)
+				close(pipes_fd[C - 1][1]);
+			//Check if builtin function exists.
+			if(builtin){	
+				status = (*builtin_function[i])(args, fd_in, fd_out, pipeline_count, pipes_fd);
+				builtin = 0;
+				if(pipeline_count == 0)
+					return status;
+			}
 				status = lsh_launch(args[C], fd_in, fd_out, pipeline_count, pipes_fd);
 		}
 
@@ -348,10 +372,10 @@ char ***lsh_split_line(char *line){
 
 		args[i][0] = strtok(cmds[i], LSH_TOK_DELIM);
 		for(j = 1; j <= MAX_ARG_COUNT; j++){
-				args[i][j] = strtok(NULL, LSH_TOK_DELIM);
+			args[i][j] = strtok(NULL, LSH_TOK_DELIM);
 				
-				if(args[i][j] == NULL)
-						break;
+			if(args[i][j] == NULL)
+				break;
 		}
 	}
 
@@ -379,18 +403,18 @@ char *lsh_read_line(void){
 
 char *str_strip(char *str){
 		if(!str)
-				return str;	//NULL
+			return str;	//NULL
 
 		while(isspace(*str))
-				++str;
+			++str;
 
 		char *last = str;
 		while(*last != '\0') 
-				++last;
+			++last;
 		last--;		//move to the character before '\0'
 
 		while(isspace(*last)) 
-				*(last--) = '\0';	//replace space with \0
+			*(last--) = '\0';	//replace space with \0
 
 		return str;
 }
