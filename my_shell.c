@@ -138,6 +138,7 @@ int lsh_num_builtins() {
 int lsh_echo(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[][2]){
 		//No ability to deal with pipeline
 		int args_count = 0;
+		
 		while(args[0][args_count] != NULL)
 				args_count++;
 
@@ -145,14 +146,15 @@ int lsh_echo(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[
 			for(int i = 2; i < args_count; i++)
 					printf("%s ", args[0][i]);
 		} else {
-			for(int i = 1; i < args_count; i++)
+			for(int i = 1; i < args_count; i++){
 					printf("%s ", args[0][i]);
+					fflush(stdout);
+			}
 			printf("\n");
 		}
-		
 		//output file redirection
 		int redirection_index = 0, output_flag = 0;
-		if(pipes_count > 0){
+		//if(pipes_count > 0){
 			args_count = 0;
 			while(args[pipes_count][args_count] != NULL)
 					args_count++;
@@ -163,7 +165,10 @@ int lsh_echo(char ***args, int fd_in, int fd_out, int pipes_count, int pipes_fd[
 					break;
 				}
 			}
-		}
+		//}
+
+		if(fd_in != STDIN_FILENO)
+			dup2(fd_in, STDIN_FILENO);
 		if(fd_out != STDOUT_FILENO)
 			dup2(fd_out, STDOUT_FILENO);
 		else{
@@ -385,9 +390,10 @@ char ***lsh_split_line(char *line){
 char *lsh_read_line(void){
 	static char cmd_seq_buffer[LSH_RL_BUFSIZE];
 
-	fputs(">>> $ ", stdout);
+	//fputs(">>> $ ", stdout);
+	printf(">>> $ ");
 	fflush(stdout);
-
+	
 	memset(cmd_seq_buffer, '\0', sizeof(cmd_seq_buffer));
 	fgets(cmd_seq_buffer, sizeof(cmd_seq_buffer), stdin);
 
